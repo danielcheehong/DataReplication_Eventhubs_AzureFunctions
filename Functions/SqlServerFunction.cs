@@ -17,7 +17,10 @@ namespace EventHubDataReplication.Functions
         }
 
         [Function("ProcessEventToSqlServer")]
-        public async Task Run([EventHubTrigger("events-sql", Connection = "EventHubConnectionString")] Azure.Messaging.EventHubs.EventData[] events)
+        public async Task Run([EventHubTrigger("events-sql",
+                            ConsumerGroup = "TargetReplicator1",
+                            Connection = "EventHubConnectionString")
+                            ] Azure.Messaging.EventHubs.EventData[] events)
         {
             var connectionString = Environment.GetEnvironmentVariable("SqlConnectionString");
             if (string.IsNullOrEmpty(connectionString))
