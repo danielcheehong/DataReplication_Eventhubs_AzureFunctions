@@ -16,8 +16,10 @@ namespace EventHubDataReplication.Functions
             _logger = logger;
         }
 
-        [Function("ProcessEventToTableStorage")]
-        public async Task Run([EventHubTrigger("events-table", Connection = "EventHubConnectionString")] Azure.Messaging.EventHubs.EventData[] events)
+    [Function("ProcessEventToTableStorage")]
+    public async Task Run([EventHubTrigger(Constants.EventHubConstants.EventHubName,
+                        ConsumerGroup = Constants.EventHubConstants.ConsumerGroupTable,
+                        Connection = "EventHubConnectionString")] Azure.Messaging.EventHubs.EventData[] events)
         {
             var connectionString = Environment.GetEnvironmentVariable("TableStorageConnectionString");
             if (string.IsNullOrEmpty(connectionString))

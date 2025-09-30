@@ -35,7 +35,7 @@ public class EHClientProducer
 
 		// Build EventHubProducerClient manually because we publish (output binding is for triggers mainly)
 		var eventHubConnection = Environment.GetEnvironmentVariable("EventHubConnectionString");
-		var eventHubName = Environment.GetEnvironmentVariable("ProducerEventHubName") ?? "events-sql"; // default reuse
+		var eventHubName = Environment.GetEnvironmentVariable("ProducerEventHubName") ?? EventHubDataReplication.Constants.EventHubConstants.EventHubName; // centralized default
 
 		if (string.IsNullOrWhiteSpace(eventHubConnection))
 		{

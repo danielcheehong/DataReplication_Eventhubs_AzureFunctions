@@ -1,34 +1,46 @@
 # Azure Functions Event Hub Data Replication
 
-This project demonstrates how to create Azure Functions that consume events from Azure Event Hubs and replicate the data to different database targets:
+This project demonstrates a fan‑out replication pipeline: a single Azure Event Hub acts as the source of truth for domain events and three Azure Functions consume the stream in parallel—each persisting the data to a different storage technology (SQL Server, Cosmos DB, and Azure Table Storage).
 
-- **SQL Server Function**: Saves events to SQL Server database
-- **Cosmos DB Function**: Saves events to Azure Cosmos DB 
-- **Table Storage Function**: Saves events to Azure Table Storage
+## Architecture (Single Hub Fan‑Out)
 
-## Architecture
-
-Each Azure Function is triggered by events from different Event Hub partitions and processes them independently:
+All consumer Functions listen to the same Event Hub `events-source`, but each uses its own consumer group to maintain isolated checkpoints and scaling behavior.
 
 ```
-Event Hub → Azure Functions → Multiple Databases
-├── events-sql     → ProcessEventToSqlServer    → SQL Server
-├── events-cosmos  → ProcessEventToCosmosDB    → Cosmos DB  
-└── events-table   → ProcessEventToTableStorage → Table Storage
+                    +------------------+
+                    |  SqlToEventHub   |  (Timer producer polls SQL -> emits events)
+                    |  (Producer)      |
+                    +---------+--------+
+                              |
+                       Event Hub (events-source)
+                              |
+        +---------------------+---------------------+
+        |                     |                     |
+  Consumer Group         Consumer Group        Consumer Group
+  TargetSqlReplicator    TargetCosmosReplicator TargetTableReplicator
+        |                     |                     |
+  ProcessEventToSqlServer  ProcessEventToCosmosDB  ProcessEventToTableStorage
+        |                     |                     |
+     SQL Server            Cosmos DB            Azure Table Storage
 ```
+
+### Why Separate Consumer Groups?
+Each consumer group has its own set of checkpoints and leases, allowing independent replay, scaling, and failure isolation. This avoids contention and prevents one sink’s lag from blocking others.
 
 ## Prerequisites
 
+Required locally / for deployment:
 - .NET 8.0 SDK
 - Azure subscription
-- Azure Event Hubs namespace with event hubs:
-  - `events-sql`
-  - `events-cosmos` 
-  - `events-table`
-- Target databases:
-  - SQL Server database
-  - Azure Cosmos DB account
-  - Azure Storage account
+- Azure Event Hubs namespace with ONE hub: `events-source`
+- Create three consumer groups (besides `$Default`):
+  - `TargetSqlReplicator`
+  - `TargetCosmosReplicator`
+  - `TargetTableReplicator`
+- Target data services:
+  - SQL Server (local or Azure SQL)
+  - Azure Cosmos DB account (Core (SQL) API)
+  - Azure Storage (or Azurite for Table Storage locally)
 
 ## Project Structure
 
@@ -51,14 +63,14 @@ Event Hub → Azure Functions → Multiple Databases
 
 ### Local Development
 
-Update `local.settings.json` with your connection strings:
+Update `local.settings.json` with your connection strings (example values / placeholders):
 
 ```json
 {
   "Values": {
     "AzureWebJobsStorage": "DefaultEndpointsProtocol=https;AccountName=<storage_account>;AccountKey=<key>;EndpointSuffix=core.windows.net",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "EventHubConnectionString": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<policy>;SharedAccessKey=<key>",
+  "EventHubConnectionString": "Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<policy>;SharedAccessKey=<key>",
     "SqlConnectionString": "Server=<server>;Database=<db>;User Id=<user>;Password=<password>;",
     "CosmosDBConnectionString": "AccountEndpoint=https://<account>.documents.azure.com:443/;AccountKey=<key>;",
     "TableStorageConnectionString": "DefaultEndpointsProtocol=https;AccountName=<storage_account>;AccountKey=<key>;EndpointSuffix=core.windows.net"
@@ -66,13 +78,31 @@ Update `local.settings.json` with your connection strings:
 }
 ```
 
-### Azure Deployment
+### Event Hub & Consumer Group Setup
 
-Set the following application settings in your Azure Function App:
-- `EventHubConnectionString`
+Using Azure CLI (replace `<rg>` and `<namespace>`):
+
+```powershell
+az eventhubs eventhub create --name events-source --resource-group <rg> --namespace-name <namespace>
+az eventhubs eventhub consumer-group create --eventhub-name events-source --name TargetSqlReplicator --resource-group <rg> --namespace-name <namespace>
+az eventhubs eventhub consumer-group create --eventhub-name events-source --name TargetCosmosReplicator --resource-group <rg> --namespace-name <namespace>
+az eventhubs eventhub consumer-group create --eventhub-name events-source --name TargetTableReplicator --resource-group <rg> --namespace-name <namespace>
+```
+
+Verify:
+
+```powershell
+az eventhubs eventhub consumer-group list --eventhub-name events-source --resource-group <rg> --namespace-name <namespace>
+```
+
+### Azure Deployment Settings
+Configure these Application Settings in the Function App:
+- `EventHubConnectionString` (namespace-level recommended)
 - `SqlConnectionString`
-- `CosmosDBConnectionString` 
+- `CosmosDBConnectionString`
 - `TableStorageConnectionString`
+
+Optionally: `ProducerEventHubName` if you want to override the default `events-source`.
 
 ## Event Data Structure
 
@@ -92,7 +122,7 @@ Events should follow this JSON structure:
 }
 ```
 
-## Database Setup
+## Database / Storage Setup
 
 ### SQL Server
 
@@ -117,9 +147,17 @@ The function will automatically create:
 - Container: `EventContainer` 
 - Partition Key: `/PartitionKey`
 
-### Table Storage 
+### Table Storage
+Automatically creates a table named `EventData`. Local development can use Azurite:
 
-The function will automatically create a table named `EventData`.
+```powershell
+azurite --tableHost 127.0.0.1 --queueHost 127.0.0.1 --blobHost 127.0.0.1
+```
+Connection string example (Azurite):
+
+```
+DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNO...==;TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;
+```
 
 ## Running the Application
 
@@ -136,14 +174,14 @@ The function will automatically create a table named `EventData`.
    ```
 
 3. Start the Function App:
-   ```bash
-   func start
-   ```
+  ```powershell
+  func start
+  ```
 
 ### Deployment
 
-Deploy to Azure using:
-```bash
+Deploy to Azure:
+```powershell
 func azure functionapp publish <function-app-name>
 ```
 
@@ -176,14 +214,24 @@ Send test events to your Event Hubs using the sample format in `Scripts/sample-e
 
 ### Common Issues
 
-1. **Connection String Errors**: Verify all connection strings are correctly formatted
-2. **Database Permissions**: Ensure the Function App has appropriate database permissions
-3. **Event Hub Access**: Verify the Event Hub connection string has correct permissions
-4. **Missing Dependencies**: Run `dotnet restore` to ensure all packages are installed
+1. **Connection String Errors**: Check each required setting exists (local.settings.json not deployed)
+2. **Consumer Group Missing**: Ensure all three custom consumer groups exist in `events-source`
+3. **Event Hub Parsing Error**: Confirm the connection string starts with `Endpoint=sb://` and is namespace-level
+4. **Checkpoint/Offset Issues**: Deleting a consumer group in Azure resets offsets; recreate only if you intend a replay
+5. **Missing Dependencies**: Run `dotnet restore` if build fails locally
 
 ### Logs
 
-Check Function App logs in Azure Portal or use:
-```bash
+Check Function App logs in Azure Portal or:
+```powershell
 func azure functionapp logstream <function-app-name>
 ```
+
+## Constants
+Centralized hub name & consumer group names are defined in `Constants/EventHubConstants.cs` to prevent typos and ease refactoring.
+
+## Future Enhancements
+- Add dead-letter routing (secondary Event Hub or Storage Queue)
+- Structured validation & schema versioning
+- Observability: partition lag metrics via EventProcessor logs
+- Batch size tuning & backpressure strategies

@@ -18,7 +18,9 @@ namespace EventHubDataReplication.Functions
         }
 
         [Function("ProcessEventToCosmosDB")]
-        public async Task Run([EventHubTrigger("events-cosmos", Connection = "EventHubConnectionString")] Azure.Messaging.EventHubs.EventData[] events)
+        public async Task Run([EventHubTrigger(Constants.EventHubConstants.EventHubName,
+                              ConsumerGroup = Constants.EventHubConstants.ConsumerGroupCosmos,
+                              Connection = "EventHubConnectionString")] Azure.Messaging.EventHubs.EventData[] events)
         {
             var connectionString = Environment.GetEnvironmentVariable("CosmosDBConnectionString");
             if (string.IsNullOrEmpty(connectionString))
